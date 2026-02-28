@@ -5,3 +5,4 @@ streamlit>=1.30
 xgboost
 scikit-learn
 plotly
+joblib
