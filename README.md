@@ -166,7 +166,6 @@ Early risk detection
 
 Decision support automation
 
-Access the app using; https://backlogpy.streamlit.app/
 
 
 Future Improvements
