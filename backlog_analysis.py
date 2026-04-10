@@ -15,11 +15,7 @@ import re
 # =========================
 PIPELINE_PATH = "backlog_pipeline.pkl"
 
-# ── Paste the SHA-256 of your .pkl here (run generate_model_hash.py once) ──
-EXPECTED_MODEL_HASH = os.environ.get("MODEL_HASH", "")   # or hardcode after first run
-
-# Allowed company email domain(s)  e.g. "@mycompany.com"
-ALLOWED_DOMAINS = [d.strip() for d in os.environ.get("ALLOWED_DOMAINS", "@gmail.com").split(",")]
+EXPECTED_MODEL_HASH = os.environ.get("MODEL_HASH", "")
 
 MAX_UPLOAD_MB   = 20
 MAX_ROWS        = 100_000
@@ -60,82 +56,8 @@ logging.basicConfig(
 )
 audit = logging.getLogger("audit")
 
-def _user() -> str:
-    """Return current authenticated user email (or 'unknown')."""
-    return st.session_state.get("user_email", "unknown")
-
 def log(action: str, detail: str = ""):
-    audit.info(f"user={_user()} | action={action} | {detail}")
-
-
-# =========================
-# GOOGLE OAUTH  (built into Streamlit Community Cloud)
-# =========================
-def check_auth():
-    """
-    Streamlit Community Cloud exposes st.experimental_user (or st.user in newer versions).
-    We validate the email domain and store it in session_state.
-    """
-    # ── Streamlit >= 1.35 uses st.user; older uses st.experimental_user ──
-    user_obj = getattr(st, "user", None) or getattr(st, "experimental_user", None)
-
-    if user_obj is None:
-        # Running locally without auth configured — warn developer
-        st.warning(
-            "⚠️ Auth not configured. "
-            "Deploy to Streamlit Community Cloud and enable Google OAuth in your app settings."
-        )
-        st.info("Running in LOCAL DEV mode — authentication bypassed.")
-        st.session_state["user_email"]      = "dev@local"
-        st.session_state["user_name"]       = "Local Developer"
-        st.session_state["authenticated"]   = True
-        return
-
-    email = getattr(user_obj, "email", None)
-
-    if not email:
-        _show_login_wall("Could not retrieve your email from Google. Please try again.")
-        st.stop()
-
-    # Domain check
-    domain_ok = any(email.lower().endswith(d.lower()) for d in ALLOWED_DOMAINS)
-    if not domain_ok:
-        log("AUTH_DENIED", f"email={email}")
-        _show_login_wall(
-            f"**Access denied.** Your account (`{email}`) is not authorised.\n\n"
-            f"Contact your administrator to get access."
-        )
-        st.stop()
-
-    # All good
-    st.session_state["user_email"]    = email
-    st.session_state["user_name"]     = getattr(user_obj, "name", email)
-    st.session_state["authenticated"] = True
-    log("AUTH_SUCCESS")
-
-
-def _show_login_wall(message: str):
-    st.set_page_config(page_title="Backlog Dashboard — Login", layout="centered")
-    st.markdown(
-        """
-        <style>
-        .login-box {
-            max-width: 480px; margin: 80px auto; padding: 2.5rem 3rem;
-            border: 1px solid #e0e0e0; border-radius: 12px;
-            box-shadow: 0 4px 24px rgba(0,0,0,.08);
-            text-align: center; font-family: sans-serif;
-        }
-        .login-box h2 { margin-bottom: .25rem; }
-        .login-box p  { color: #666; font-size: .95rem; }
-        </style>
-        <div class="login-box">
-            <h2>🔒 Backlog Dashboard</h2>
-            <p>Sign in with your company Google account to continue.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.error(message)
+    audit.info(f"action={action} | {detail}")
 
 
 # =========================
@@ -170,16 +92,13 @@ def load_pipeline(path: str):
 # SAFE CSV READER
 # =========================
 def safe_read_csv(uploaded_file) -> pd.DataFrame:
-    # 1. Size guard
     if uploaded_file.size > MAX_UPLOAD_MB * 1024 * 1024:
         st.error(f"File too large. Maximum allowed size is {MAX_UPLOAD_MB} MB.")
         log("UPLOAD_REJECTED", f"reason=size_exceeded file={uploaded_file.name} size={uploaded_file.size}")
         st.stop()
 
-    # 2. Filename sanitisation
     safe_name = re.sub(r"[^\w.\-]", "_", uploaded_file.name)
 
-    # 3. Parse
     try:
         content = uploaded_file.read()
         df = pd.read_csv(
@@ -195,7 +114,6 @@ def safe_read_csv(uploaded_file) -> pd.DataFrame:
     if len(df) >= MAX_ROWS:
         st.warning(f"File has been capped at {MAX_ROWS:,} rows for safety.")
 
-    # 4. Column allow-list  (drop anything unexpected)
     unexpected = set(df.columns) - ALLOWED_COLUMNS
     if unexpected:
         st.warning(f"Unexpected columns were ignored: {unexpected}")
@@ -573,16 +491,14 @@ def render_analysis_tab():
         src = df2 if cfg.get("x") == "period" else df
         metric_panel(src, **cfg)
 
-    # ── Secure download (authenticated users only) ──
-    if st.session_state.get("authenticated"):
-        st.download_button(
-            "⬇ Download filtered analysis data (CSV)",
-            data=df.to_csv(index=False).encode("utf-8"),
-            file_name="analysis_filtered.csv",
-            mime="text/csv",
-            key="ana_download"
-        )
-        log("DOWNLOAD", f"tab=analysis rows={len(df)}")
+    st.download_button(
+        "⬇ Download filtered analysis data (CSV)",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="analysis_filtered.csv",
+        mime="text/csv",
+        key="ana_download"
+    )
+    log("DOWNLOAD", f"tab=analysis rows={len(df)}")
 
 
 # =========================
@@ -677,8 +593,6 @@ def render_prediction_tab(pipe):
     except Exception as e:
         logging.exception("Prediction failed")
         st.error("Prediction failed. Check your CSV format and try again.")
-        if st.secrets.get("ENV", "prod") == "dev":
-            st.exception(e)
         return
 
     if results.empty:
@@ -731,26 +645,25 @@ def render_prediction_tab(pipe):
     st.subheader("Detailed table (colour-coded risk)")
     st.dataframe(style_risk_table(show), use_container_width=True, height=520)
 
-    if st.session_state.get("authenticated"):
-        col1, col2 = st.columns(2)
-        with col1:
-            st.download_button(
-                "⬇ Download predictions (CSV)",
-                data=f.to_csv(index=False).encode("utf-8"),
-                file_name="predictions.csv",
-                mime="text/csv",
-                key="pred_download"
-            )
-        with col2:
-            critical_df = f[f["risk_level"] == "CRITICAL"]
-            st.download_button(
-                f"⬇ Download CRITICAL only ({len(critical_df):,} rows)",
-                data=critical_df.to_csv(index=False).encode("utf-8"),
-                file_name="predictions_critical.csv",
-                mime="text/csv",
-                key="pred_download_critical"
-            )
-        log("DOWNLOAD", f"tab=predictions rows={len(f)}")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button(
+            "⬇ Download predictions (CSV)",
+            data=f.to_csv(index=False).encode("utf-8"),
+            file_name="predictions.csv",
+            mime="text/csv",
+            key="pred_download"
+        )
+    with col2:
+        critical_df = f[f["risk_level"] == "CRITICAL"]
+        st.download_button(
+            f"⬇ Download CRITICAL only ({len(critical_df):,} rows)",
+            data=critical_df.to_csv(index=False).encode("utf-8"),
+            file_name="predictions_critical.csv",
+            mime="text/csv",
+            key="pred_download_critical"
+        )
+    log("DOWNLOAD", f"tab=predictions rows={len(f)}")
 
 
 # =========================
@@ -758,17 +671,6 @@ def render_prediction_tab(pipe):
 # =========================
 def main():
     st.set_page_config(page_title="Backlog Dashboard", layout="wide")
-
-    # ── Authentication gate — must pass before anything renders ──
-    check_auth()
-
-    # ── User info badge in sidebar ──
-    with st.sidebar:
-        st.markdown(
-            f"**👤 {st.session_state.get('user_name', '')}**  \n"
-            f"`{st.session_state.get('user_email', '')}`"
-        )
-        st.divider()
 
     st.markdown(
         """
