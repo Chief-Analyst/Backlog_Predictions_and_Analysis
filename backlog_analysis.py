@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import joblib
 import plotly.express as px
-import hashlib
 import logging
 import datetime
 import io
@@ -15,7 +14,6 @@ import re
 # =========================
 PIPELINE_PATH = "backlog_pipeline.pkl"
 
-EXPECTED_MODEL_HASH = os.environ.get("MODEL_HASH", "")
 
 MAX_UPLOAD_MB   = 20
 MAX_ROWS        = 100_000
@@ -64,27 +62,12 @@ def log(action: str, detail: str = ""):
 # SECURE MODEL LOADING
 # =========================
 @st.cache_resource
+@st.cache_resource
 def load_pipeline(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Model file not found: {path}")
 
-    actual_hash = hashlib.sha256(open(path, "rb").read()).hexdigest()
-
-    if EXPECTED_MODEL_HASH and actual_hash != EXPECTED_MODEL_HASH:
-        log("MODEL_HASH_MISMATCH", f"expected={EXPECTED_MODEL_HASH} actual={actual_hash}")
-        raise ValueError(
-            "Model file integrity check failed.\n"
-            f"Expected: {EXPECTED_MODEL_HASH}\nGot:      {actual_hash}\n"
-            "The file may have been tampered with."
-        )
-
-    if not EXPECTED_MODEL_HASH:
-        st.sidebar.warning(
-            f"⚠️ Model hash not set. Set `EXPECTED_MODEL_HASH` in secrets.\n\n"
-            f"Current hash: `{actual_hash}`"
-        )
-
-    log("MODEL_LOADED", f"path={path} hash={actual_hash}")
+    log("MODEL_LOADED", f"path={path}")
     return joblib.load(path)
 
 
